@@ -21,6 +21,7 @@ try:
     DOMAIN = st.secrets["commcare"]["domain"]
     USERNAME = st.secrets["commcare"]["username"]
     API_KEY = st.secrets["commcare"]["api_key"]
+    FORM_XMLNS = st.secrets["commcare"].get("form_xmlns", "")
 except KeyError as e:
     st.error(f"Missing configuration key in secrets: {e}")
     st.info(
@@ -29,7 +30,7 @@ except KeyError as e:
     )
     st.stop()
 
-# Requested target variables
+# Target variables list requested
 TARGET_COLUMNS = [
     "control_farmer.knows",
     "control_farmer.number",
@@ -57,36 +58,45 @@ TARGET_COLUMNS = [
 
 
 # -----------------------------------------------------------------------------
-# 3. COMMCARE DAILY SAVED EXPORT FETCH FUNCTION (CACHED)
+# 3. COMMCARE DAILY SAVED EXPORT FETCH FUNCTION (ROBUST)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600)  # Caches fetched CSV in memory for 1 hour
-def fetch_commcare_saved_export(domain, export_id, username, api_key):
-    """Downloads CSV data directly from CommCare HQ's Daily Saved Export route."""
-    # Exact Daily Saved Export URL endpoint
-    url = f"https://www.commcarehq.org/a/{domain}/data/export/custom/dailysaved/download/{export_id}/"
-
+def fetch_commcare_saved_export(domain, export_id, username, api_key, xmlns):
+    """Fetches export data while verifying content type to avoid HTML tokenizer errors."""
     headers = {
         "Authorization": f"ApiKey {username}:{api_key}",
+        "Accept": "text/csv, application/json",
     }
 
-    try:
-        response = requests.get(
-            url, headers=headers, timeout=90, allow_redirects=True
-        )
+    # API endpoints targeting the saved export & form export endpoints
+    urls = [
+        f"https://www.commcarehq.org/a/{domain}/api/v0.5/form_export/{export_id}/?format=csv",
+        f"https://www.commcarehq.org/a/{domain}/api/v0.5/form_export/?xmlns={xmlns}&format=csv" if xmlns else None,
+        f"https://www.commcarehq.org/a/{domain}/reports/form/export/download/{export_id}/?format=csv",
+    ]
 
-        if response.status_code == 200:
-            csv_data = io.StringIO(response.text)
-            return pd.read_csv(csv_data, low_memory=False)
-        else:
-            st.error(
-                f"Failed to fetch Daily Saved Export (Status"
-                f" {response.status_code}): {response.text[:300]}"
-            )
-            return pd.DataFrame()
+    for url in urls:
+        if not url:
+            continue
+        try:
+            response = requests.get(url, headers=headers, timeout=90, allow_redirects=True)
+            content_type = response.headers.get("Content-Type", "").lower()
 
-    except Exception as err:
-        st.error(f"Connection error while fetching export feed: {str(err)}")
-        return pd.DataFrame()
+            # Only attempt pandas parsing if response is 200 OK and NOT an HTML page
+            if response.status_code == 200 and "html" not in content_type:
+                # Check if the output actually looks like CSV data
+                if response.text.startswith("<!DOCTYPE") or "<html" in response.text[:200].lower():
+                    continue
+                csv_data = io.StringIO(response.text)
+                return pd.read_csv(csv_data, low_memory=False)
+        except Exception:
+            continue
+
+    st.error(
+        "Could not retrieve CSV data via API authentication. "
+        "Verify your API Key and ensure the export feed is accessible."
+    )
+    return pd.DataFrame()
 
 
 # -----------------------------------------------------------------------------
@@ -102,16 +112,13 @@ if st.sidebar.button("🔄 Force Refresh Export"):
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.info(
-    "Data is fetched directly from the daily saved export feed endpoint."
-)
 
 # Main Execution Flow
-with st.spinner("Downloading 2.1 MB CSV export from CommCare HQ..."):
-    df_raw = fetch_commcare_saved_export(DOMAIN, EXPORT_ID, USERNAME, API_KEY)
+with st.spinner("Downloading CSV export from CommCare HQ..."):
+    df_raw = fetch_commcare_saved_export(DOMAIN, EXPORT_ID, USERNAME, API_KEY, FORM_XMLNS)
 
 if not df_raw.empty:
-    # Match target variables against columns in the export feed
+    # Match available target columns
     existing_target_cols = []
     for col in TARGET_COLUMNS:
         if col in df_raw.columns:
@@ -122,9 +129,7 @@ if not df_raw.empty:
             existing_target_cols.append(col[5:])
 
     # Filter dataset to available target columns
-    df_display = (
-        df_raw[existing_target_cols] if existing_target_cols else df_raw
-    )
+    df_display = df_raw[existing_target_cols] if existing_target_cols else df_raw
 
     # ---------------------------------------------------------
     # SUMMARY METRICS
@@ -169,4 +174,4 @@ if not df_raw.empty:
     )
 
 else:
-    st.warning("No data retrieved from the export feed.")
+    st.warning("No data retrieved from the export feed. Click '🔄 Force Refresh Export' after checking secrets configuration.")
