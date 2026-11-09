@@ -58,45 +58,81 @@ TARGET_COLUMNS = [
 
 
 # -----------------------------------------------------------------------------
-# 3. COMMCARE DAILY SAVED EXPORT FETCH FUNCTION (ROBUST)
+# 3. COMMCARE FETCH FUNCTION WITH DUAL AUTH (CACHED)
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=3600)  # Caches fetched CSV in memory for 1 hour
-def fetch_commcare_saved_export(domain, export_id, username, api_key, xmlns):
-    """Fetches export data while verifying content type to avoid HTML tokenizer errors."""
-    headers = {
-        "Authorization": f"ApiKey {username}:{api_key}",
-        "Accept": "text/csv, application/json",
-    }
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def fetch_commcare_saved_export(
+    domain, export_id, username, api_key, xmlns=""
+):
+    """Tries Basic Auth for Daily Saved Export web routes and ApiKey header for API routes."""
+    debug_logs = []
 
-    # API endpoints targeting the saved export & form export endpoints
-    urls = [
-        f"https://www.commcarehq.org/a/{domain}/api/v0.5/form_export/{export_id}/?format=csv",
-        f"https://www.commcarehq.org/a/{domain}/api/v0.5/form_export/?xmlns={xmlns}&format=csv" if xmlns else None,
+    # Strategy A: Daily Saved Export web routes using Basic Authentication
+    web_urls = [
+        f"https://www.commcarehq.org/a/{domain}/data/export/custom/dailysaved/download/{export_id}/",
         f"https://www.commcarehq.org/a/{domain}/reports/form/export/download/{export_id}/?format=csv",
     ]
 
-    for url in urls:
+    for url in web_urls:
+        try:
+            # Using HTTP Basic Auth for web endpoints
+            response = requests.get(
+                url, auth=(username, api_key), timeout=90, allow_redirects=True
+            )
+            content_type = response.headers.get("Content-Type", "").lower()
+
+            if (
+                response.status_code == 200
+                and "html" not in content_type
+                and not response.text.strip().startswith("<!DOCTYPE")
+            ):
+                csv_data = io.StringIO(response.text)
+                df = pd.read_csv(csv_data, low_memory=False)
+                return df, debug_logs
+            else:
+                debug_logs.append(
+                    f"Basic Auth Route failed ({response.status_code}): {url}"
+                )
+        except Exception as err:
+            debug_logs.append(f"Basic Auth Exception: {str(err)}")
+
+    # Strategy B: CommCare API Token Authentication (ApiKey header)
+    api_headers = {"Authorization": f"ApiKey {username}:{api_key}"}
+    api_urls = [
+        f"https://www.commcarehq.org/a/{domain}/api/v0.5/form_export/{export_id}/?format=csv",
+        f"https://www.commcarehq.org/a/{domain}/api/v0.5/form_export/?xmlns={xmlns}&format=csv"
+        if xmlns
+        else None,
+    ]
+
+    for url in api_urls:
         if not url:
             continue
         try:
-            response = requests.get(url, headers=headers, timeout=90, allow_redirects=True)
+            response = requests.get(
+                url,
+                headers=api_headers,
+                timeout=90,
+                allow_redirects=True,
+            )
             content_type = response.headers.get("Content-Type", "").lower()
 
-            # Only attempt pandas parsing if response is 200 OK and NOT an HTML page
-            if response.status_code == 200 and "html" not in content_type:
-                # Check if the output actually looks like CSV data
-                if response.text.startswith("<!DOCTYPE") or "<html" in response.text[:200].lower():
-                    continue
+            if (
+                response.status_code == 200
+                and "html" not in content_type
+                and not response.text.strip().startswith("<!DOCTYPE")
+            ):
                 csv_data = io.StringIO(response.text)
-                return pd.read_csv(csv_data, low_memory=False)
-        except Exception:
-            continue
+                df = pd.read_csv(csv_data, low_memory=False)
+                return df, debug_logs
+            else:
+                debug_logs.append(
+                    f"API Route failed ({response.status_code}): {url}"
+                )
+        except Exception as err:
+            debug_logs.append(f"API Route Exception: {str(err)}")
 
-    st.error(
-        "Could not retrieve CSV data via API authentication. "
-        "Verify your API Key and ensure the export feed is accessible."
-    )
-    return pd.DataFrame()
+    return pd.DataFrame(), debug_logs
 
 
 # -----------------------------------------------------------------------------
@@ -114,11 +150,18 @@ if st.sidebar.button("🔄 Force Refresh Export"):
 st.sidebar.markdown("---")
 
 # Main Execution Flow
-with st.spinner("Downloading CSV export from CommCare HQ..."):
-    df_raw = fetch_commcare_saved_export(DOMAIN, EXPORT_ID, USERNAME, API_KEY, FORM_XMLNS)
+with st.spinner("Connecting to CommCare HQ export feed..."):
+    df_raw, debug_logs = fetch_commcare_saved_export(
+        DOMAIN, EXPORT_ID, USERNAME, API_KEY, FORM_XMLNS
+    )
+
+# Debug Expander in Sidebar
+with st.sidebar.expander("🔍 Diagnostics & Logs", expanded=df_raw.empty):
+    for log in debug_logs:
+        st.write(log)
 
 if not df_raw.empty:
-    # Match available target columns
+    # Match target variables against columns in dataset
     existing_target_cols = []
     for col in TARGET_COLUMNS:
         if col in df_raw.columns:
@@ -128,12 +171,12 @@ if not df_raw.empty:
         elif col.startswith("form.") and col[5:] in df_raw.columns:
             existing_target_cols.append(col[5:])
 
-    # Filter dataset to available target columns
-    df_display = df_raw[existing_target_cols] if existing_target_cols else df_raw
+    # Filter dataset to matched columns
+    df_display = (
+        df_raw[existing_target_cols] if existing_target_cols else df_raw
+    )
 
-    # ---------------------------------------------------------
-    # SUMMARY METRICS
-    # ---------------------------------------------------------
+    # Summary Metrics
     col1, col2, col3 = st.columns(3)
     col1.metric("Total Submissions", len(df_raw))
     col2.metric("Total Export Columns", len(df_raw.columns))
@@ -144,11 +187,8 @@ if not df_raw.empty:
 
     st.markdown("---")
 
-    # ---------------------------------------------------------
-    # DATA EXPLORER & FILTERS
-    # ---------------------------------------------------------
+    # Data Display
     st.subheader("Target Variables Explorer")
-
     available_cols = df_display.columns.tolist()
     selected_cols = st.multiselect(
         "Select/Filter columns to show:",
@@ -162,9 +202,7 @@ if not df_raw.empty:
         height=450,
     )
 
-    # ---------------------------------------------------------
-    # DOWNLOAD ACTION BUTTON
-    # ---------------------------------------------------------
+    # Download Button
     csv_bytes = df_display.to_csv(index=False).encode("utf-8")
     st.download_button(
         label="📥 Download Target Variables CSV",
@@ -174,4 +212,8 @@ if not df_raw.empty:
     )
 
 else:
-    st.warning("No data retrieved from the export feed. Click '🔄 Force Refresh Export' after checking secrets configuration.")
+    st.error("Unable to retrieve CSV file from CommCare feed.")
+    st.info(
+        "**Troubleshooting Checklist:**\n"
+        "1. Open CommCare HQ -> **Data** -> **Daily Saved Exports**.\n"
+        "
