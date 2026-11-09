@@ -61,34 +61,32 @@ TARGET_COLUMNS = [
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600)  # Caches fetched CSV in memory for 1 hour
 def fetch_commcare_saved_export(domain, export_id, username, api_key):
-    """Downloads CSV data directly from a CommCare Daily Saved Export Feed."""
+    """Downloads CSV data directly from CommCare HQ's Daily Saved Export route."""
+    # Exact Daily Saved Export URL endpoint
+    url = f"https://www.commcarehq.org/a/{domain}/data/export/custom/dailysaved/download/{export_id}/"
+
     headers = {
         "Authorization": f"ApiKey {username}:{api_key}",
     }
 
-    # Candidate endpoints for CommCare Daily Saved Export CSV retrieval
-    urls_to_try = [
-        f"https://www.commcarehq.org/a/{domain}/data/export/custom/form/download/{export_id}/?format=csv",
-        f"https://www.commcarehq.org/a/{domain}/reports/export/custom/form/download/{export_id}/?format=csv",
-        f"https://www.commcarehq.org/a/{domain}/reports/form/export/download/{export_id}/?format=csv",
-    ]
+    try:
+        response = requests.get(
+            url, headers=headers, timeout=90, allow_redirects=True
+        )
 
-    for url in urls_to_try:
-        try:
-            response = requests.get(url, headers=headers, timeout=90)
-            # Verify valid response (200 OK and returning CSV data, not HTML login page)
-            content_type = response.headers.get("Content-Type", "")
-            if response.status_code == 200 and "text/html" not in content_type:
-                csv_data = io.StringIO(response.text)
-                return pd.read_csv(csv_data, low_memory=False)
-        except Exception:
-            continue
+        if response.status_code == 200:
+            csv_data = io.StringIO(response.text)
+            return pd.read_csv(csv_data, low_memory=False)
+        else:
+            st.error(
+                f"Failed to fetch Daily Saved Export (Status"
+                f" {response.status_code}): {response.text[:300]}"
+            )
+            return pd.DataFrame()
 
-    st.error(
-        "Failed to retrieve CSV feed from CommCare. Check API Key permissions"
-        " or network authorization."
-    )
-    return pd.DataFrame()
+    except Exception as err:
+        st.error(f"Connection error while fetching export feed: {str(err)}")
+        return pd.DataFrame()
 
 
 # -----------------------------------------------------------------------------
@@ -105,15 +103,15 @@ if st.sidebar.button("🔄 Force Refresh Export"):
 
 st.sidebar.markdown("---")
 st.sidebar.info(
-    "Data is fetched directly from the configured CommCare saved export feed."
+    "Data is fetched directly from the daily saved export feed endpoint."
 )
 
 # Main Execution Flow
-with st.spinner("Fetching 2.1 MB CSV export from CommCare HQ..."):
+with st.spinner("Downloading 2.1 MB CSV export from CommCare HQ..."):
     df_raw = fetch_commcare_saved_export(DOMAIN, EXPORT_ID, USERNAME, API_KEY)
 
 if not df_raw.empty:
-    # Match available columns against the target variables list
+    # Match target variables against columns in the export feed
     existing_target_cols = []
     for col in TARGET_COLUMNS:
         if col in df_raw.columns:
