@@ -15,9 +15,8 @@ st.set_page_config(
 # -----------------------------------------------------------------------------
 # 2. CONFIGURATION & TARGET VARIABLES
 # -----------------------------------------------------------------------------
-# Saved Export ID extracted from:
-# https://www.commcarehq.org/a/oaf-ethiopia/data/export/custom/new/form/edit/7ec202e6ffaeb66c716e6671519190d4/
-EXPORT_ID = "7ec202e6ffaeb66c716e6671519190d4"
+# Daily Saved Export ID from CommCare HQ feed URL:
+EXPORT_ID = "ec835f1ac45d12a69f16829a65e69007"
 
 try:
     DOMAIN = st.secrets["commcare"]["domain"]
@@ -64,7 +63,7 @@ TARGET_COLUMNS = [
 @st.cache_data(ttl=3600)  # Caches fetched CSV in memory for 1 hour
 def fetch_commcare_saved_export(domain, export_id, username, api_key):
     """Downloads CSV data directly from a CommCare Daily Saved Export Feed."""
-    # Direct download route for specific export configuration
+    # Direct download link route for CommCare Daily Saved Export
     download_url = f"https://www.commcarehq.org/a/{domain}/reports/form/export/download/{export_id}/?format=csv"
 
     headers = {
@@ -76,8 +75,7 @@ def fetch_commcare_saved_export(domain, export_id, username, api_key):
 
         if response.status_code == 200:
             csv_data = io.StringIO(response.text)
-            df = pd.read_csv(csv_data, low_memory=False)
-            return df
+            return pd.read_csv(csv_data, low_memory=False)
         else:
             st.error(
                 f"Failed to fetch Daily Saved Export (Status"
@@ -94,7 +92,7 @@ def fetch_commcare_saved_export(domain, export_id, username, api_key):
 # 4. DASHBOARD INTERFACE
 # -----------------------------------------------------------------------------
 st.title("🌳 Tree Planting 2026 [South In-Person] — Main Survey")
-st.caption(f"Domain: `{DOMAIN}` | Export ID: `{EXPORT_ID}`")
+st.caption(f"Domain: `{DOMAIN}` | Daily Saved Export ID: `{EXPORT_ID}`")
 
 # Sidebar Controls
 st.sidebar.header("Controls & Actions")
@@ -108,14 +106,11 @@ st.sidebar.info(
 )
 
 # Main Execution Flow
-with st.spinner(
-    "Fetching CSV export from CommCare HQ (ET MEL 2026 > Tree Planting 2026"
-    " [South In-Person])..."
-):
+with st.spinner("Downloading CSV export from CommCare HQ..."):
     df_raw = fetch_commcare_saved_export(DOMAIN, EXPORT_ID, USERNAME, API_KEY)
 
 if not df_raw.empty:
-    # Flexible matching for target variables (supports exact match or form. prefixed match)
+    # Flexible column matching (handles direct variable names or headers with prefixes/suffixes)
     existing_target_cols = []
     for col in TARGET_COLUMNS:
         if col in df_raw.columns:
@@ -174,6 +169,7 @@ if not df_raw.empty:
 
 else:
     st.warning(
-        "No data retrieved. Ensure the Daily Saved Export feature is updated"
-        " and enabled in CommCare HQ under this Export ID."
+        "No data retrieved. Make sure you have clicked **'Update Data'** inside"
+        " CommCare HQ under Daily Saved Exports at least once to build the"
+        " initial file."
     )
