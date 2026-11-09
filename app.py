@@ -25,8 +25,8 @@ try:
 except KeyError as e:
     st.error(f"Missing configuration key in secrets: {e}")
     st.info(
-        "Make sure `.streamlit/secrets.toml` or Streamlit Cloud Secrets has"
-        " domain, username, and api_key configured."
+        "Make sure `.streamlit/secrets.toml` or Streamlit Cloud Secrets has "
+        "domain, username, and api_key configured."
     )
     st.stop()
 
@@ -61,9 +61,7 @@ TARGET_COLUMNS = [
 # 3. COMMCARE FETCH FUNCTION WITH DUAL AUTH (CACHED)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600)  # Cache for 1 hour
-def fetch_commcare_saved_export(
-    domain, export_id, username, api_key, xmlns=""
-):
+def fetch_commcare_saved_export(domain, export_id, username, api_key, xmlns=""):
     """Tries Basic Auth for Daily Saved Export web routes and ApiKey header for API routes."""
     debug_logs = []
 
@@ -75,7 +73,6 @@ def fetch_commcare_saved_export(
 
     for url in web_urls:
         try:
-            # Using HTTP Basic Auth for web endpoints
             response = requests.get(
                 url, auth=(username, api_key), timeout=90, allow_redirects=True
             )
@@ -100,9 +97,11 @@ def fetch_commcare_saved_export(
     api_headers = {"Authorization": f"ApiKey {username}:{api_key}"}
     api_urls = [
         f"https://www.commcarehq.org/a/{domain}/api/v0.5/form_export/{export_id}/?format=csv",
-        f"https://www.commcarehq.org/a/{domain}/api/v0.5/form_export/?xmlns={xmlns}&format=csv"
-        if xmlns
-        else None,
+        (
+            f"https://www.commcarehq.org/a/{domain}/api/v0.5/form_export/?xmlns={xmlns}&format=csv"
+            if xmlns
+            else None
+        ),
     ]
 
     for url in api_urls:
@@ -214,6 +213,8 @@ if not df_raw.empty:
 else:
     st.error("Unable to retrieve CSV file from CommCare feed.")
     st.info(
-        "**Troubleshooting Checklist:**\n"
-        "1. Open CommCare HQ -> **Data** -> **Daily Saved Exports**.\n"
-        "
+        "1. Open CommCare HQ -> Data -> Daily Saved Exports.\n"
+        "2. Find ET MEL 2026 > Tree Planting 2026 [South In-Person] > Main survey.\n"
+        "3. Click 'Update Data'.\n"
+        "4. Check the Diagnostics & Logs expander in the sidebar for connection status."
+    )
